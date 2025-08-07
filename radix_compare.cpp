@@ -1,24 +1,23 @@
+// g++ -std=c++17 -O3 radix_compare.cpp -lfftw3 -lm -o radix_compare
+
 #include <iostream>
 #include <vector>
-#include <complex>
 #include <cmath>
-#include <chrono>
 #include <random>
-#include <algorithm>
-#include <stdexcept>
+#include <chrono>
+#include <iomanip>
 #include <fftw3.h>
+#include <stdexcept>
+#include <algorithm>
 
 using namespace std;
-using Complex = complex<double>;
-using Vec = vector<Complex>;
 
-// --------- Bit-Reversal --------- //
-vector<size_t> bit_reverse_indices(size_t n) {
+// ------------- Bit-reversal permutation table ------------- //
+static vector<size_t> bit_reverse_indices(size_t n) {
     size_t bits = static_cast<size_t>(log2(n));
     vector<size_t> rev(n);
     for (size_t i = 0; i < n; ++i) {
-        size_t x = i;
-        size_t r = 0;
+        size_t x = i, r = 0;
         for (size_t j = 0; j < bits; ++j) {
             r = (r << 1) | (x & 1);
             x >>= 1;
@@ -28,107 +27,122 @@ vector<size_t> bit_reverse_indices(size_t n) {
     return rev;
 }
 
-// --------- Radix-2 Iterative FFT --------- //
-void radix2_fft_iter(Vec& x) {
-    size_t N = x.size();
-    if ((N & (N - 1)) != 0) {
-        throw invalid_argument("Input size must be a power of 2.");
+// ------------- Radix-2 iterative FFT (in-place) ------------ //
+void radix2_fft_iter_real(vector<double>& x) {
+    size_t N = x.size() / 2;            // complex length
+    if (N == 0 || (N & (N - 1))) {
+        throw invalid_argument("Length must be a positive power of two.");
     }
 
-    // Bit-reversal permutation
-    auto rev = bit_reverse_indices(N);
-    Vec x_copy = x;
+    // Bit-reversal copy
+    static vector<size_t> rev;          // cached between calls
+    if (rev.size() != N) rev = bit_reverse_indices(N);
+
+    vector<double> tmp = x;
     for (size_t i = 0; i < N; ++i) {
-        x[i] = x_copy[rev[i]];
+        size_t r = rev[i];
+        x[2*i]     = tmp[2*r];
+        x[2*i + 1] = tmp[2*r + 1];
     }
 
-    // Iterative Cooley–Tukey FFT
+    // Cooley–Tukey iterations
     for (size_t m = 2; m <= N; m <<= 1) {
-        size_t half = m / 2;
-        Vec W(half);
-        for (size_t k = 0; k < half; ++k) {
-            double angle = -2.0 * M_PI * k / m;
-            W[k] = Complex(cos(angle), sin(angle));
-        }
-
+        size_t half = m >> 1;
+        double theta = -2.0 * M_PI / m;
         for (size_t start = 0; start < N; start += m) {
             for (size_t k = 0; k < half; ++k) {
-                Complex u = x[start + k];
-                Complex t = x[start + k + half] * W[k];
-                x[start + k] = u + t;
-                x[start + k + half] = u - t;
+                double wr = cos(theta * k);
+                double wi = sin(theta * k);
+
+                size_t i = start + k;
+                size_t j = i + half;
+
+                double ur = x[2*i];
+                double ui = x[2*i + 1];
+                double tr = x[2*j];
+                double ti = x[2*j + 1];
+
+                // t * W
+                double tr_wr = tr * wr - ti * wi;
+                double ti_wr = tr * wi + ti * wr;
+
+                // butterfly
+                x[2*i]     = ur + tr_wr;
+                x[2*i + 1] = ui + ti_wr;
+                x[2*j]     = ur - tr_wr;
+                x[2*j + 1] = ui - ti_wr;
             }
         }
     }
 }
 
-// --------- Test & FFTW Comparison --------- //
-void test_large_radix(size_t N) {
-    cout << "\n🚀 测试 Radix‑2 FFT, 长度 N = " << N << endl;
+// ------------- One size test (against FFTW) --------------- //
+void test_size(size_t N, mt19937& gen, normal_distribution<>& dist) {
+    cout << "N = " << setw(10) << N << " : ";
 
-    // 随机输入
+    vector<double> data(2*N);
+    for (size_t i = 0; i < N; ++i) {
+        data[2*i]     = dist(gen);
+        data[2*i + 1] = dist(gen);
+    }
+
+    vector<double> mine = data;
+
+    auto t0 = chrono::high_resolution_clock::now();
+    radix2_fft_iter_real(mine);
+    auto t1 = chrono::high_resolution_clock::now();
+    chrono::duration<double> dt_mine = t1 - t0;
+
+    // ---- FFTW reference ----- //
+    vector<fftw_complex> in(N), out(N);
+    for (size_t i = 0; i < N; ++i) {
+        in[i][0] = data[2*i];
+        in[i][1] = data[2*i + 1];
+    }
+    fftw_plan plan = fftw_plan_dft_1d(static_cast<int>(N), in.data(), out.data(), FFTW_FORWARD, FFTW_ESTIMATE);
+    auto t2 = chrono::high_resolution_clock::now();
+    fftw_execute(plan);
+    auto t3 = chrono::high_resolution_clock::now();
+    fftw_destroy_plan(plan);
+    chrono::duration<double> dt_fftw = t3 - t2;
+
+    // ---- accuracy ----- //
+    double max_rel_err = 0.0;
+    for (size_t i = 0; i < N; ++i) {
+        double ref_r = out[i][0];
+        double ref_i = out[i][1];
+        double ref_mag = hypot(ref_r, ref_i);
+        if (ref_mag < 1e-12) ref_mag = 1e-12;
+        double diff = hypot(mine[2*i] - ref_r, mine[2*i + 1] - ref_i);
+        max_rel_err = max(max_rel_err, diff / ref_mag);
+    }
+
+    cout << fixed << setprecision(4)
+         << "t_my = " << setw(9) << dt_mine.count()*1000 << " ms, "
+         << "t_fftw = " << setw(9) << dt_fftw.count()*1000 << " ms, "
+         << "speedup = " << setprecision(2) << dt_fftw.count()/dt_mine.count() << "x, "
+         << scientific << "maxErr = " << max_rel_err << '\n';
+}
+
+// ------------- Main driver -------------------------------- //
+int main(int argc, char** argv) {
+    int max_pow = 24;              // default 2^0 .. 2^24 (16,777,216)
+    if (argc > 1) max_pow = stoi(argv[1]);
+
     random_device rd;
     mt19937 gen(rd());
     normal_distribution<> dist(0.0, 1.0);
-    Vec x(N);
-    for (size_t i = 0; i < N; ++i) {
-        x[i] = Complex(dist(gen), dist(gen));
-    }
 
-    // 自写 FFT
-    Vec x_fft = x;
-    auto start_radix = chrono::high_resolution_clock::now();
-    radix2_fft_iter(x_fft);
-    auto end_radix = chrono::high_resolution_clock::now();
-    chrono::duration<double> elapsed_radix = end_radix - start_radix;
-    cout << "✅ 完成 Radix‑2 FFT，耗时：" << elapsed_radix.count() << " 秒" << endl;
-
-    // FFTW 准备输入
-    vector<fftw_complex> in(N), out(N);
-    for (size_t i = 0; i < N; ++i) {
-        in[i][0] = x[i].real();
-        in[i][1] = x[i].imag();
-    }
-
-    // 创建 plan
-    auto start_plan = chrono::high_resolution_clock::now();
-    fftw_plan p = fftw_plan_dft_1d(
-        static_cast<int>(N), in.data(), out.data(), FFTW_FORWARD, FFTW_ESTIMATE);
-    auto end_plan = chrono::high_resolution_clock::now();
-    chrono::duration<double> plan_time = end_plan - start_plan;
-
-    // 执行 FFTW
-    auto start_fftw = chrono::high_resolution_clock::now();
-    fftw_execute(p);
-    auto end_fftw = chrono::high_resolution_clock::now();
-    fftw_destroy_plan(p);
-    chrono::duration<double> elapsed_fftw = end_fftw - start_fftw;
-
-    cout << "✅ 完成 FFTW FFT，耗时：" << elapsed_fftw.count() << " 秒 (不含 plan: plan 耗时 " << plan_time.count() << " 秒)" << endl;
-
-    // 误差对比
-    double max_rel_err = 0.0;
-    for (size_t i = 0; i < N; ++i) {
-        Complex ref(out[i][0], out[i][1]);
-        double denom = abs(ref);
-        if (denom < 1e-12) denom = 1e-12;
-        double rel_err = abs(x_fft[i] - ref) / denom;
-        max_rel_err = max(max_rel_err, rel_err);
-    }
-
-    cout << "🎯 最大相对误差 = " << max_rel_err << endl;
-
-    // 速度对比
-    double speedup = elapsed_fftw.count() / elapsed_radix.count();
-    cout << "⚡️ 速度比 (Radix2 / FFTW) = " << speedup << "x\n";
-}
-
-
-// --------- Main --------- //
-int main() {
-    vector<size_t> sizes = { 1 << 20, 1 << 22, 1 << 24 };  // 1M, 4M, 16M
-    for (size_t N : sizes) {
-        test_large_radix(N);
+    cout << "\nRadix-2 FFT (double array) vs FFTW — accuracy & speed\n";
+    cout << "---------------------------------------------------\n";
+    for (int p = 0; p <= max_pow; ++p) {
+        size_t N = 1ull << p;
+        try {
+            test_size(N, gen, dist);
+        } catch (const bad_alloc&) {
+            cerr << "Out of memory for N=" << N << " — stopping tests\n";
+            break;
+        }
     }
     return 0;
 }
