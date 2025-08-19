@@ -7,7 +7,6 @@
 #include <cassert>
 
 namespace {
-constexpr double PI() { return 3.141592653589793238462643383279502884; }
 
 // 计算 M: 最小的 2^k >= 2*N - 1
 int calc_bluestein_M(int N) {
@@ -19,7 +18,8 @@ int calc_bluestein_M(int N) {
 // ---- 小函数拆分：chirp + 前缀填充 + 对称填充 ----
 inline void chirp(int n, int N, double& wr, double& wi) {
     // w[n] = exp(-i * pi * n^2 / N)
-    double angle = -PI() * (double)n * (double)n / (double)N;
+    const double angle = -3.141592653589793238462643383279502884
+                         * (double)n * (double)n / (double)N;
     wr = std::cos(angle);
     wi = std::sin(angle);
 }
@@ -49,13 +49,14 @@ inline void mirror_b_tail(double* b, int N, int M) {
 // 朴素 DFT（复数交织）
 void naive_dft(const double* in, int M, bool inverse, double* out) {
     const double scale = inverse ? (1.0 / M) : 1.0;
-    const double sgn = inverse ? +1.0 : -1.0; // exp(i*sgn*2πnk/M)
+    const double sgn   = inverse ? +1.0 : -1.0; // exp(i*sgn*2πnk/M)
     for (int k = 0; k < M; ++k) {
         double sumRe = 0.0, sumIm = 0.0;
         for (int n = 0; n < M; ++n) {
             double xr = in[2*n];
             double xi = in[2*n+1];
-            double angle = (2.0 * PI()) * (double)n * (double)k / (double)M;
+            const double angle = (2.0 * 3.141592653589793238462643383279502884)
+                                 * (double)n * (double)k / (double)M;
             double wr = std::cos(angle);
             double wi = std::sin(angle);
             // x[n] * (wr + i*sgn*wi)
@@ -91,7 +92,7 @@ void bluestein_dft_real(
     double* C,       // 2*M
     double* c        // 2*M
 ) {
-    // 直接调用两个小函数：写前缀 + 对称填充
+    // 写前缀 + 对称填充
     fill_ab_prefix(x, N, a, b);
     mirror_b_tail(b, N, M);
 
@@ -119,7 +120,8 @@ void direct_dft_real(const double* x, int N, double* out) {
     for (int k = 0; k < N; ++k) {
         double sumRe = 0.0, sumIm = 0.0;
         for (int n = 0; n < N; ++n) {
-            double angle = (2.0 * PI()) * (double)n * (double)k / (double)N;
+            const double angle = (2.0 * 3.141592653589793238462643383279502884)
+                                 * (double)n * (double)k / (double)N;
             double wr = std::cos(angle);
             double wi = std::sin(angle);
             sumRe += x[n] * wr;
