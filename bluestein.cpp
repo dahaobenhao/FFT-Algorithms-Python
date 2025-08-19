@@ -5,6 +5,8 @@
 #include <vector>
 #include <limits>
 #include <cassert>
+#include <algorithm> // for std::max
+#include <cstdlib>   // for std::atoi
 
 namespace {
 
@@ -15,18 +17,12 @@ int calc_bluestein_M(int N) {
     return M;
 }
 
-// ---- 小函数拆分：chirp + 前缀填充 + 对称填充 ----
-inline void chirp(int n, int N, double& wr, double& wi) {
-    // w[n] = exp(-i * pi * n^2 / N)
-    const double angle = -3.141592653589793238462643383279502884
-                         * (double)n * (double)n / (double)N;
-    wr = std::cos(angle);
-    wi = std::sin(angle);
-}
-
+// ---- 前缀填充 + 对称填充（chirp 已展开，π 用 atan2 方式获取）----
 inline void fill_ab_prefix(const double* x, int N, double* a, double* b) {
     for (int n = 0; n < N; ++n) {
-        double wr, wi; chirp(n, N, wr, wi);
+        const double angle = -(std::atan2(0.0, -1.0)) * (double)n * (double)n / (double)N; // -π n^2 / N
+        const double wr = std::cos(angle);
+        const double wi = std::sin(angle);
         // a[n] = x[n] * w[n]
         a[2*n]   = x[n] * wr;
         a[2*n+1] = x[n] * wi;
@@ -55,8 +51,7 @@ void naive_dft(const double* in, int M, bool inverse, double* out) {
         for (int n = 0; n < M; ++n) {
             double xr = in[2*n];
             double xi = in[2*n+1];
-            const double angle = (2.0 * 3.141592653589793238462643383279502884)
-                                 * (double)n * (double)k / (double)M;
+            const double angle = (2.0 * std::atan2(0.0, -1.0)) * (double)n * (double)k / (double)M; // 2π n k / M
             double wr = std::cos(angle);
             double wi = std::sin(angle);
             // x[n] * (wr + i*sgn*wi)
@@ -106,9 +101,11 @@ void bluestein_dft_real(
     // 逆变换 -> 时域卷积
     naive_dft(C, M, /*inverse=*/true, c);
 
-    // 取前 N 点，并乘 w[k]
+    // 取前 N 点，并乘 w[k]（w[k] = exp(-i*pi*k^2/N)）
     for (int k = 0; k < N; ++k) {
-        double wr, wi; chirp(k, N, wr, wi); // w[k]
+        const double angle = -(std::atan2(0.0, -1.0)) * (double)k * (double)k / (double)N; // -π k^2 / N
+        const double wr = std::cos(angle);
+        const double wi = std::sin(angle);
         double cr = c[2*k], ci = c[2*k+1];
         out[2*k]   = cr*wr - ci*wi;
         out[2*k+1] = cr*wi + ci*wr;
@@ -120,8 +117,7 @@ void direct_dft_real(const double* x, int N, double* out) {
     for (int k = 0; k < N; ++k) {
         double sumRe = 0.0, sumIm = 0.0;
         for (int n = 0; n < N; ++n) {
-            const double angle = (2.0 * 3.141592653589793238462643383279502884)
-                                 * (double)n * (double)k / (double)N;
+            const double angle = (2.0 * std::atan2(0.0, -1.0)) * (double)n * (double)k / (double)N; // 2π n k / N
             double wr = std::cos(angle);
             double wi = std::sin(angle);
             sumRe += x[n] * wr;
